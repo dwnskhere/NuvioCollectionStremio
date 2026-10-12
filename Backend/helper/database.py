@@ -1777,25 +1777,32 @@ class Database:
 
 
     async def get_media_details(
-        self, 
+        self,
         imdb_id: str = None,
-        season_number: Optional[int] = None, 
+        season_number: Optional[int] = None,
         episode_number: Optional[int] = None,
         kitsu_id: Optional[int] = None,
         absolute_episode: Optional[int] = None,
+        tmdb_id: Optional[int] = None,
+        media_type: Optional[str] = None,
     ) -> Optional[dict]:
 
+        # A TMDB ID is not globally unique between movies and TV shows, so the
+        # Stremio route's media_type is used to disambiguate it. Existing IMDb
+        # and Kitsu callers retain their previous lookup behaviour.
         def _find_doc(col):
             if imdb_id:
                 return col.find_one({"imdb_id": imdb_id})
             if kitsu_id is not None:
                 return col.find_one({"kitsu_id": int(kitsu_id)})
+            if tmdb_id is not None:
+                return col.find_one({"tmdb_id": int(tmdb_id)})
             return None
 
         for db_idx in range(self.current_db_index, 0, -1):
             db_key = f"storage_{db_idx}"
 
-            if absolute_episode is not None and (kitsu_id is not None or imdb_id):
+            if absolute_episode is not None and (kitsu_id is not None or imdb_id or tmdb_id is not None):
                 tv_show = await _find_doc(self.dbs[db_key]["tv"])
                 if tv_show:
                     for season in tv_show.get("seasons", []):
@@ -1872,13 +1879,33 @@ class Database:
                             return details
             
             else:
+                # Prefer the explicit type for TMDB IDs because movie and TV
+                # records may legally share the same numeric ID.
+                if tmdb_id is not None and media_type == "movie":
+                    movie_doc = await _find_doc(self.dbs[db_key]["movie"])
+                    if movie_doc:
+                        movie_doc = convert_objectid_to_str(movie_doc)
+                        movie_doc["type"] = "movie"
+                        movie_doc["db_index"] = db_idx
+                        return movie_doc
+                    continue
+
+                if tmdb_id is not None and media_type in ("series", "tv"):
+                    tv_doc = await _find_doc(self.dbs[db_key]["tv"])
+                    if tv_doc:
+                        tv_doc = convert_objectid_to_str(tv_doc)
+                        tv_doc["type"] = "tv"
+                        tv_doc["db_index"] = db_idx
+                        return tv_doc
+                    continue
+
                 tv_doc = await _find_doc(self.dbs[db_key]["tv"])
                 if tv_doc:
                     tv_doc = convert_objectid_to_str(tv_doc)
                     tv_doc["type"] = "tv"
                     tv_doc["db_index"] = db_idx
                     return tv_doc
-                
+
                 movie_doc = await _find_doc(self.dbs[db_key]["movie"])
                 if movie_doc:
                     movie_doc = convert_objectid_to_str(movie_doc)
